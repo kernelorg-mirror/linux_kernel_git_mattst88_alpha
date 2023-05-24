@@ -606,6 +606,28 @@ smp_imb(void)
 }
 EXPORT_SYMBOL(smp_imb);
 
+#define asn_locked() (cpu_data[smp_processor_id()].asn_lock)
+
+/*
+ * If the mm_cpumask bit is cleared, the caller *must* flush the TLB for the
+ * mm on this CPU. It is only cleared when the mm is not active, in which
+ * case the flushing always performs flush_tlb_other that flushes everything.
+ * If that changes in callers, they will have to arrange to always do a full
+ * flush if mm_cpumask is cleared by this function.
+ */
+void
+try_clear_mm_cpumask(struct mm_struct *mm)
+{
+	int cpu;
+
+	if (current->active_mm == mm || asn_locked())
+		return;
+
+	cpu = smp_processor_id();
+	if (cpumask_test_cpu(cpu, mm_cpumask(mm)))
+		cpumask_clear_cpu(cpu, mm_cpumask(mm));
+}
+
 static void
 ipi_flush_tlb_all(void *ignored)
 {
@@ -620,12 +642,12 @@ flush_tlb_all(void)
 	on_each_cpu(ipi_flush_tlb_all, NULL, 1);
 }
 
-#define asn_locked() (cpu_data[smp_processor_id()].asn_lock)
-
 static void
 ipi_flush_tlb_mm(void *x)
 {
 	struct mm_struct *mm = x;
+
+	try_clear_mm_cpumask(mm);
 	if (mm == current->active_mm && !asn_locked())
 		flush_tlb_current(mm);
 	else
@@ -667,6 +689,7 @@ ipi_flush_tlb_page(void *x)
 	struct flush_tlb_page_struct *data = x;
 	struct mm_struct * mm = data->mm;
 
+	try_clear_mm_cpumask(mm);
 	if (mm == current->active_mm && !asn_locked())
 		flush_tlb_current_page(mm, data->vma, data->addr);
 	else
@@ -706,6 +729,8 @@ static void
 ipi_flush_icache_page(void *x)
 {
 	struct mm_struct *mm = (struct mm_struct *) x;
+
+	try_clear_mm_cpumask(mm);
 	if (mm == current->active_mm && !asn_locked())
 		__load_new_mm_context(mm);
 	else

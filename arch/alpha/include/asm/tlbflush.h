@@ -12,6 +12,11 @@
 #endif
 
 extern void __load_new_mm_context(struct mm_struct *);
+#ifdef CONFIG_SMP
+extern void try_clear_mm_cpumask(struct mm_struct *);
+#else
+static inline void try_clear_mm_cpumask(struct mm_struct *mm) { }
+#endif
 
 
 __EXTERN_INLINE void
@@ -75,6 +80,7 @@ static inline void flush_tlb_all(void)
 static inline void
 flush_tlb_mm(struct mm_struct *mm)
 {
+	try_clear_mm_cpumask(mm);
 	if (mm == current->active_mm)
 		flush_tlb_current(mm);
 	else
@@ -87,6 +93,7 @@ flush_tlb_page(struct vm_area_struct *vma, unsigned long addr)
 {
 	struct mm_struct *mm = vma->vm_mm;
 
+	try_clear_mm_cpumask(mm);
 	if (mm == current->active_mm)
 		flush_tlb_current_page(mm, vma, addr);
 	else
