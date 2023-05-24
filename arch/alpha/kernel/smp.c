@@ -144,7 +144,7 @@ smp_callin(void)
 		alpha_mv.smp_callin();
 
 	/* All kernel threads share the same mm context.  */
-	mmgrab(&init_mm);
+	mmgrab_lazy_tlb(&init_mm);
 	current->active_mm = &init_mm;
 	cpumask_set_cpu(smp_processor_id(), mm_cpumask(&init_mm));
 
