@@ -635,23 +635,6 @@ ipi_flush_tlb_mm(void *x)
 void
 flush_tlb_mm(struct mm_struct *mm)
 {
-	preempt_disable();
-
-	if (mm == current->active_mm) {
-		flush_tlb_current(mm);
-		if (atomic_read(&mm->mm_users) <= 1) {
-			int cpu, this_cpu = smp_processor_id();
-			for (cpu = 0; cpu < NR_CPUS; cpu++) {
-				if (!cpu_online(cpu) || cpu == this_cpu)
-					continue;
-				if (mm->context[cpu])
-					mm->context[cpu] = 0;
-			}
-			preempt_enable();
-			return;
-		}
-	}
-
 	/*
 	 * TLB flush IPIs will be sent to all CPUs with mm_cpumask set. The
 	 * problem of ordering the load of mm_cpumask vs a CPU switching to
@@ -662,8 +645,12 @@ flush_tlb_mm(struct mm_struct *mm)
 	 * The other side is switch_mm.
 	 */
 	smp_mb();
+	preempt_disable();
+	if (mm == current->active_mm)
+		flush_tlb_current(mm);
+	else
+		flush_tlb_other(mm);
 	smp_call_function_many(mm_cpumask(mm), ipi_flush_tlb_mm, mm, 1);
-
 	preempt_enable();
 }
 EXPORT_SYMBOL(flush_tlb_mm);
@@ -692,30 +679,17 @@ flush_tlb_page(struct vm_area_struct *vma, unsigned long addr)
 	struct flush_tlb_page_struct data;
 	struct mm_struct *mm = vma->vm_mm;
 
-	preempt_disable();
-
-	if (mm == current->active_mm) {
-		flush_tlb_current_page(mm, vma, addr);
-		if (atomic_read(&mm->mm_users) <= 1) {
-			int cpu, this_cpu = smp_processor_id();
-			for (cpu = 0; cpu < NR_CPUS; cpu++) {
-				if (!cpu_online(cpu) || cpu == this_cpu)
-					continue;
-				if (mm->context[cpu])
-					mm->context[cpu] = 0;
-			}
-			preempt_enable();
-			return;
-		}
-	}
-
 	data.vma = vma;
 	data.mm = mm;
 	data.addr = addr;
 
 	smp_mb(); /* see flush_tlb_mm */
+	preempt_disable();
+	if (mm == current->active_mm)
+		flush_tlb_current_page(mm, vma, addr);
+	else
+		flush_tlb_other(mm);
 	smp_call_function_many(mm_cpumask(mm), ipi_flush_tlb_page, &data, 1);
-
 	preempt_enable();
 }
 EXPORT_SYMBOL(flush_tlb_page);
@@ -747,24 +721,12 @@ flush_icache_user_page(struct vm_area_struct *vma, struct page *page,
 	if ((vma->vm_flags & VM_EXEC) == 0)
 		return;
 
+	smp_mb(); /* see flush_tlb_mm */
 	preempt_disable();
-
-	if (mm == current->active_mm) {
+	if (mm == current->active_mm)
 		__load_new_mm_context(mm);
-		if (atomic_read(&mm->mm_users) <= 1) {
-			int cpu, this_cpu = smp_processor_id();
-			for (cpu = 0; cpu < NR_CPUS; cpu++) {
-				if (!cpu_online(cpu) || cpu == this_cpu)
-					continue;
-				if (mm->context[cpu])
-					mm->context[cpu] = 0;
-			}
-			preempt_enable();
-			return;
-		}
-	}
-
-	smp_call_function(ipi_flush_icache_page, mm, 1);
-
+	else
+		flush_tlb_other(mm);
+	smp_call_function_many(mm_cpumask(mm), ipi_flush_icache_page, mm, 1);
 	preempt_enable();
 }
