@@ -224,6 +224,8 @@ void __init arch_zone_limits_init(unsigned long *max_zone_pfn)
 void __init paging_init(void)
 {
 	memset(absolute_pointer(ZERO_PGE), 0, PAGE_SIZE);
+
+	cpumask_set_cpu(raw_smp_processor_id(), mm_cpumask(&init_mm));
 }
 
 #if defined(CONFIG_ALPHA_GENERIC) || defined(CONFIG_ALPHA_SRM)

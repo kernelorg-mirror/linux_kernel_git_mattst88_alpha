@@ -146,6 +146,7 @@ smp_callin(void)
 	/* All kernel threads share the same mm context.  */
 	mmgrab(&init_mm);
 	current->active_mm = &init_mm;
+	cpumask_set_cpu(smp_processor_id(), mm_cpumask(&init_mm));
 
 	/* inform the notifiers about the new cpu */
 	notify_cpu_starting(cpuid);
@@ -651,7 +652,17 @@ flush_tlb_mm(struct mm_struct *mm)
 		}
 	}
 
-	smp_call_function(ipi_flush_tlb_mm, mm, 1);
+	/*
+	 * TLB flush IPIs will be sent to all CPUs with mm_cpumask set. The
+	 * problem of ordering the load of mm_cpumask vs a CPU switching to
+	 * the mm and caching a translation from a PTE being invalidated and
+	 * flushed here means we must have a memory barrier. This orders the
+	 * prior stores to invalidate the PTEs from the load of mm_cpumask.
+	 *
+	 * The other side is switch_mm.
+	 */
+	smp_mb();
+	smp_call_function_many(mm_cpumask(mm), ipi_flush_tlb_mm, mm, 1);
 
 	preempt_enable();
 }
@@ -702,7 +713,8 @@ flush_tlb_page(struct vm_area_struct *vma, unsigned long addr)
 	data.mm = mm;
 	data.addr = addr;
 
-	smp_call_function(ipi_flush_tlb_page, &data, 1);
+	smp_mb(); /* see flush_tlb_mm */
+	smp_call_function_many(mm_cpumask(mm), ipi_flush_tlb_page, &data, 1);
 
 	preempt_enable();
 }

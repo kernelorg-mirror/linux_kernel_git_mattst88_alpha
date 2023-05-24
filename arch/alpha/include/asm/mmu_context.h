@@ -134,6 +134,20 @@ ev5_switch_mm(struct mm_struct *prev_mm, struct mm_struct *next_mm,
 	cpu_data[cpu].asn_lock = 1;
 	barrier();
 #endif
+	if (!cpumask_test_cpu(cpu, mm_cpumask(next_mm))) {
+		cpumask_set_cpu(cpu, mm_cpumask(next_mm));
+		/*
+		 * Store to mm_cpumask must be visible to CPUs performing
+		 * TLB flushes before memory accesses that could bring in
+		 * new TLB entries. This orders the store above with the
+		 * load of the new context and subsequent loads of PTEs
+		 * that can then be cached in the TLB.
+		 *
+		 * The other side is in the mm_cpumask testing in TLB
+		 * flush.
+		 */
+		smp_mb();
+	}
 	asn = cpu_last_asn(cpu);
 	mmc = next_mm->context[cpu];
 	if ((mmc ^ asn) & ~HARDWARE_ASN_MASK) {
@@ -149,6 +163,8 @@ ev5_switch_mm(struct mm_struct *prev_mm, struct mm_struct *next_mm,
 	   a new mm->context (via flush_tlb_mm) without the ASN serial
 	   number wrapping.  We have no way to detect when this is needed.  */
 	task_thread_info(next)->pcb.asn = mmc & HARDWARE_ASN_MASK;
+
+	WARN_ON(!cpumask_test_cpu(cpu, mm_cpumask(prev_mm)));
 }
 
 extern void __load_new_mm_context(struct mm_struct *);
@@ -175,6 +191,7 @@ do {								\
 static inline void
 ev5_activate_mm(struct mm_struct *prev_mm, struct mm_struct *next_mm)
 {
+	cpumask_set_cpu(smp_processor_id(), mm_cpumask(next_mm));
 	__load_new_mm_context(next_mm);
 }
 
