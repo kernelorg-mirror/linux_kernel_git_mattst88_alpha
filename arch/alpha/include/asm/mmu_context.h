@@ -20,11 +20,7 @@
  * table pointer or when we update the ASN of the current process.
  */
 
-/* Don't get into trouble with dueling __EXTERN_INLINEs.  */
-#ifndef __EXTERN_INLINE
 #include <asm/io.h>
-#endif
-
 
 static inline unsigned long
 __reload_thread(struct pcb_struct *pcb)
@@ -110,12 +106,7 @@ extern unsigned long last_asn;
  * run.
  */
 
-#ifndef __EXTERN_INLINE
-#define __EXTERN_INLINE extern inline
-#define __MMU_EXTERN_INLINE
-#endif
-
-extern inline unsigned long
+static inline unsigned long
 __get_new_mm_context(struct mm_struct *mm, long cpu)
 {
 	unsigned long asn = cpu_last_asn(cpu);
@@ -130,7 +121,7 @@ __get_new_mm_context(struct mm_struct *mm, long cpu)
 	return next;
 }
 
-__EXTERN_INLINE void
+static inline void
 ev5_switch_mm(struct mm_struct *prev_mm, struct mm_struct *next_mm,
 	      struct task_struct *next)
 {
@@ -181,7 +172,7 @@ do {								\
 #define check_mmu_context()  do { } while(0)
 #endif
 
-__EXTERN_INLINE void
+static inline void
 ev5_activate_mm(struct mm_struct *prev_mm, struct mm_struct *next_mm)
 {
 	__load_new_mm_context(next_mm);
@@ -213,10 +204,5 @@ enter_lazy_tlb(struct mm_struct *mm, struct task_struct *tsk)
 }
 
 #include <asm-generic/mmu_context.h>
-
-#ifdef __MMU_EXTERN_INLINE
-#undef __EXTERN_INLINE
-#undef __MMU_EXTERN_INLINE
-#endif
 
 #endif /* __ALPHA_MMU_CONTEXT_H */
