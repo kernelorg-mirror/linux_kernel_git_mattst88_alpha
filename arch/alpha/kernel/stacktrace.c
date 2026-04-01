@@ -10,55 +10,36 @@
 #include <linux/sched.h>
 #include <linux/sched/task_stack.h>
 #include <linux/stacktrace.h>
-#include <linux/kallsyms.h>
 
 #include <asm/ptrace.h>
-#include <asm/thread_info.h>
 
-static void walk_stack(struct stack_trace *trace, unsigned long *sp,
-		       unsigned long high)
+static void walk_stack(stack_trace_consume_fn consume_entry, void *cookie,
+		       unsigned long *sp, unsigned long high)
 {
 	while ((unsigned long)sp < high) {
 		unsigned long addr = *sp++;
 
-		if (!is_kernel_text(addr))
-			continue;
-		if (trace->skip > 0) {
-			trace->skip--;
-			continue;
-		}
-		if (trace->nr_entries >= trace->max_entries)
-			return;
-		trace->entries[trace->nr_entries++] = addr;
+		if (__kernel_text_address(addr))
+			if (!consume_entry(cookie, addr))
+				return;
 	}
 }
 
-void save_stack_trace(struct stack_trace *trace)
-{
-	unsigned long *sp = (unsigned long *)current_stack_pointer;
-	unsigned long high = (unsigned long)task_stack_page(current) +
-			     THREAD_SIZE;
-
-	walk_stack(trace, sp, high);
-}
-EXPORT_SYMBOL_GPL(save_stack_trace);
-
-void save_stack_trace_tsk(struct task_struct *tsk, struct stack_trace *trace)
+void arch_stack_walk(stack_trace_consume_fn consume_entry, void *cookie,
+		     struct task_struct *task, struct pt_regs *regs)
 {
 	unsigned long *sp, high;
 
-	if (!try_get_task_stack(tsk))
-		return;
-
-	if (tsk == current) {
+	if (regs) {
+		sp = (unsigned long *)(regs + 1);
+	} else if (task == current || !task) {
 		sp = (unsigned long *)current_stack_pointer;
 	} else {
-		sp = (unsigned long *)task_thread_info(tsk)->pcb.ksp;
+		sp = (unsigned long *)task_thread_info(task)->pcb.ksp;
 	}
-	high = (unsigned long)task_stack_page(tsk) + THREAD_SIZE;
 
-	walk_stack(trace, sp, high);
+	high = (unsigned long)task_stack_page(task ? task : current) +
+	       THREAD_SIZE;
 
-	put_task_stack(tsk);
+	walk_stack(consume_entry, cookie, sp, high);
 }
-EXPORT_SYMBOL_GPL(save_stack_trace_tsk);
