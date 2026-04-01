@@ -75,6 +75,9 @@ config PGTABLE_LEVELS
 	int
 	default 3
 
+config STACKTRACE_SUPPORT
+	def_bool y
+
 config AUDIT_ARCH
 	bool
 
