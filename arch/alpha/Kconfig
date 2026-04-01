@@ -78,6 +78,9 @@ config PGTABLE_LEVELS
 config STACKTRACE_SUPPORT
 	def_bool y
 
+config LOCKDEP_SUPPORT
+	def_bool y
+
 config AUDIT_ARCH
 	bool
 
