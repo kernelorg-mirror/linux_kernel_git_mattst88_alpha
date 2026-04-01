@@ -6,28 +6,36 @@
 #include <linux/sched.h>
 #include <asm/ptrace.h>
 
+/*
+ * Alpha syscall number tracking for seccomp/ptrace:
+ *   - regs->r1: current (mutable) syscall number, may be set to -1 to skip
+ *   - regs->r2: original syscall number preserved for restart/rollback
+ *   - regs->r0: return value, with regs->r19 (a3) as error flag
+ *               (a3=0: success, a3=1: error with positive errno in r0)
+ */
+
 static inline int syscall_get_nr(struct task_struct *task,
 				 struct pt_regs *regs)
 {
-	return regs->r0;
+	return regs->r1;
 }
 
 static inline void syscall_set_nr(struct task_struct *task,
 				  struct pt_regs *regs, int nr)
 {
-	regs->r0 = nr;
+	regs->r1 = nr;
 }
 
 static inline void syscall_rollback(struct task_struct *task,
 				    struct pt_regs *regs)
 {
-	/* Alpha does not save the original syscall number separately. */
+	regs->r1 = regs->r2;
 }
 
 static inline long syscall_get_error(struct task_struct *task,
 				     struct pt_regs *regs)
 {
-	return regs->r19 ? regs->r0 : 0;
+	return regs->r19 ? -(long)regs->r0 : 0;
 }
 
 static inline long syscall_get_return_value(struct task_struct *task,
@@ -41,7 +49,8 @@ static inline void syscall_set_return_value(struct task_struct *task,
 					    int error, long val)
 {
 	if (error) {
-		regs->r0 = error;
+		/* error is negative errno; alpha ABI wants positive in r0 */
+		regs->r0 = -error;
 		regs->r19 = 1;		/* a3: signal error */
 	} else {
 		regs->r0 = val;

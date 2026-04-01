@@ -17,10 +17,12 @@
 #include <linux/security.h>
 #include <linux/signal.h>
 #include <linux/audit.h>
+#include <linux/seccomp.h>
 #include <linux/elf.h>
 
 #include <linux/uaccess.h>
 #include <asm/fpu.h>
+#include <asm/syscall.h>
 
 #include "proto.h"
 
@@ -458,13 +460,22 @@ long arch_ptrace(struct task_struct *child, long request,
 
 asmlinkage unsigned long syscall_trace_enter(void)
 {
-	unsigned long ret = 0;
 	struct pt_regs *regs = current_pt_regs();
+
 	if (test_thread_flag(TIF_SYSCALL_TRACE) &&
-	    ptrace_report_syscall_entry(current_pt_regs()))
-		ret = -1UL;
-	audit_syscall_entry(regs->r0, regs->r16, regs->r17, regs->r18, regs->r19);
-	return ret ?: current_pt_regs()->r0;
+	    ptrace_report_syscall_entry(regs)) {
+		syscall_set_nr(current, regs, -1);
+		return -1UL;
+	}
+
+	if (secure_computing() == -1) {
+		syscall_set_nr(current, regs, -1);
+		return -1UL;
+	}
+
+	audit_syscall_entry(syscall_get_nr(current, regs),
+			    regs->r16, regs->r17, regs->r18, regs->r19);
+	return syscall_get_nr(current, regs);
 }
 
 asmlinkage void

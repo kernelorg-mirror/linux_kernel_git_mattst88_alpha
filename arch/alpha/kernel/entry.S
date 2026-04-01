@@ -10,6 +10,7 @@
 #include <asm/pal.h>
 #include <asm/errno.h>
 #include <asm/unistd.h>
+#include <linux/errno.h>
 
 	.text
 	.set noat
@@ -33,6 +34,46 @@
 .macro	CFI_END_OSF_FRAME	func
 	.cfi_endproc
 	.size	\func, . - \func
+.endm
+
+/*
+ * SYSCALL_SKIP_RETURN_RESTART_GATE
+ *
+ * Used when syscall dispatch is skipped (seccomp/ptrace set nr=-1).
+ * Gate whether syscall restart is allowed by checking for ERESTART*
+ * return codes.  Result:
+ *     $26 = 0  => restart allowed
+ *     $26 = 1  => restart NOT allowed
+ *     $18 = preserved syscall nr (regs->r2) if restart allowed, else 0
+ */
+.macro	SYSCALL_SKIP_RETURN_RESTART_GATE
+	/* Restart gating: success is never restartable here. */
+	ldq	$19, 72($sp)		/* a3 */
+	beq	$19, 2f			/* success => not restartable */
+
+	ldq	$20, 0($sp)		/* r0 (positive errno if a3==1) */
+	lda	$21, ERESTARTSYS($31)
+	cmpeq	$20, $21, $22
+	bne	$22, 1f
+	lda	$21, ERESTARTNOINTR($31)
+	cmpeq	$20, $21, $22
+	bne	$22, 1f
+	lda	$21, ERESTARTNOHAND($31)
+	cmpeq	$20, $21, $22
+	bne	$22, 1f
+	lda	$21, ERESTART_RESTARTBLOCK($31)
+	cmpeq	$20, $21, $22
+	bne	$22, 1f
+
+2:	/* Not a restart code (or success) => restart NOT allowed. */
+	addq	$31, 1, $26		/* $26=1 => restart NOT allowed */
+	mov	$31, $18
+	br	3f
+
+1:	/* Restart allowed. */
+	ldq	$18, 16($sp)		/* preserved syscall nr (regs->r2) */
+	mov	$31, $26		/* $26=0 => restart allowed */
+3:
 .endm
 
 /*
@@ -486,6 +527,9 @@ entSys:
 	lda	$8, 0x3fff
 	bic	$sp, $8, $8
 	TRACE_IRQS_OFF
+	ldq	$1, 0($sp)		/* syscall nr from saved r0 */
+	stq	$1, 8($sp)		/* regs->r1 = mutable syscall nr */
+	stq	$1, 16($sp)		/* regs->r2 = original for restart */
 	lda	$4, NR_syscalls($31)
 	stq	$16, SP_OFF+24($sp)
 	lda	$5, sys_call_table
@@ -498,12 +542,12 @@ entSys:
 	.cfi_rel_offset	$16, SP_OFF+24
 	.cfi_rel_offset	$17, SP_OFF+32
 	.cfi_rel_offset	$18, SP_OFF+40
-#ifdef CONFIG_AUDITSYSCALL
-	lda     $6, _TIF_SYSCALL_TRACE | _TIF_SYSCALL_AUDIT
-	and     $3, $6, $3
-	bne     $3, strace
+#if defined(CONFIG_AUDITSYSCALL) || defined(CONFIG_SECCOMP)
+	lda	$6, _TIF_SYSCALL_WORK
+	and	$3, $6, $3
+	bne	$3, strace
 #else
-	blbs    $3, strace		/* check for SYSCALL_TRACE in disguise */
+	blbs	$3, strace		/* TIF_SYSCALL_TRACE is bit 0 */
 #endif
 	beq	$4, 1f
 	ldq	$27, 0($5)
@@ -550,12 +594,12 @@ $syscall_error:
 	/*
 	 * Some system calls (e.g., ptrace) can return arbitrary
 	 * values which might normally be mistaken as error numbers.
-	 * Those functions must zero $0 (v0) directly in the stack
-	 * frame to indicate that a negative return value wasn't an
-	 * error number..
+	 * Those functions must zero regs->r1 (the syscall nr shadow)
+	 * to indicate that a negative return value wasn't an error.
 	 */
-	ldq	$18, 0($sp)	/* old syscall nr (zero if success) */
-	beq	$18, $ret_success
+	ldq	$2, 8($sp)	/* syscall nr shadow (zero if success) */
+	beq	$2, $ret_success
+	ldq	$18, 16($sp)	/* original syscall nr for restart */
 
 	ldq	$19, 72($sp)	/* .. and this a3 */
 	subq	$31, $0, $0	/* with error in v0 */
@@ -619,6 +663,8 @@ strace:
 	jsr	$26, syscall_trace_enter /* returns the syscall number */
 	UNDO_SWITCH_STACK
 
+	stq	$0, 8($sp)		/* regs->r1 = updated syscall nr */
+
 	/* get the arguments back.. */
 	ldq	$16, SP_OFF+24($sp)
 	ldq	$17, SP_OFF+32($sp)
@@ -626,6 +672,11 @@ strace:
 	ldq	$19, 72($sp)
 	ldq	$20, 80($sp)
 	ldq	$21, 88($sp)
+
+	/* nr == -1 means skip dispatch (seccomp/ptrace denied) */
+	lda	$6, -1($31)
+	cmpeq	$0, $6, $6
+	bne	$6, $strace_skip_call
 
 	/* get the system call pointer.. */
 	lda	$1, NR_syscalls($31)
@@ -645,6 +696,8 @@ $strace_success:
 	stq	$31, 72($sp)		/* a3=0 => no error */
 	stq	$0, 0($sp)		/* save return value */
 
+$strace_skip_call:
+	SYSCALL_SKIP_RETURN_RESTART_GATE
 	DO_SWITCH_STACK
 	jsr	$26, syscall_trace_leave
 	UNDO_SWITCH_STACK
@@ -652,8 +705,9 @@ $strace_success:
 
 	.align	3
 $strace_error:
-	ldq	$18, 0($sp)	/* old syscall nr (zero if success) */
-	beq	$18, $strace_success
+	ldq	$2, 8($sp)	/* syscall nr shadow (zero if success) */
+	beq	$2, $strace_success
+	ldq	$18, 16($sp)	/* original syscall nr for restart */
 	ldq	$19, 72($sp)	/* .. and this a3 */
 
 	subq	$31, $0, $0	/* with error in v0 */
