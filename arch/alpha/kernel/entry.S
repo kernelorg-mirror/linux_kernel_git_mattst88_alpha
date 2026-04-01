@@ -170,14 +170,45 @@
 .endm
 
 /*
+ * Trace hardirq state changes for lockdep.  TRACE_IRQS_OFF is called
+ * after SAVE_ALL at each entry point where PALcode enters with IPL
+ * raised (interrupts disabled).  TRACE_IRQS_ON is called before
+ * returning to userspace, where PAL_rti will restore the user IPL.
+ *
+ * The function call clobbers caller-saved registers; $8 is preserved
+ * because it is declared as a global register variable for
+ * current_thread_info.  We reload $0 and $16-$18 from the pt_regs
+ * frame that SAVE_ALL created, since entry points pass those to their
+ * C handlers.
+ */
+.macro TRACE_IRQS_OFF
+#ifdef CONFIG_TRACE_IRQFLAGS
+	jsr	$26, trace_hardirqs_off
+	ldgp	$gp, 0($26)
+	ldq	$0, 0($sp)
+	ldq	$16, 160($sp)
+	ldq	$17, 168($sp)
+	ldq	$18, 176($sp)
+#endif
+.endm
+
+.macro TRACE_IRQS_ON
+#ifdef CONFIG_TRACE_IRQFLAGS
+	jsr	$26, trace_hardirqs_on
+	ldgp	$gp, 0($26)
+#endif
+.endm
+
+/*
  * Non-syscall kernel entry points.
  */
 
 CFI_START_OSF_FRAME entInt
 	SAVE_ALL
 	lda	$8, 0x3fff
-	lda	$26, ret_from_sys_call
 	bic	$sp, $8, $8
+	TRACE_IRQS_OFF
+	lda	$26, ret_from_sys_call
 	mov	$sp, $19
 	jsr	$31, do_entInt
 CFI_END_OSF_FRAME entInt
@@ -185,14 +216,18 @@ CFI_END_OSF_FRAME entInt
 CFI_START_OSF_FRAME entArith
 	SAVE_ALL
 	lda	$8, 0x3fff
-	lda	$26, ret_from_sys_call
 	bic	$sp, $8, $8
+	TRACE_IRQS_OFF
+	lda	$26, ret_from_sys_call
 	mov	$sp, $18
 	jsr	$31, do_entArith
 CFI_END_OSF_FRAME entArith
 
 CFI_START_OSF_FRAME entMM
 	SAVE_ALL
+	lda	$8, 0x3fff
+	bic	$sp, $8, $8
+	TRACE_IRQS_OFF
 /* save $9 - $15 so the inline exception code can manipulate them.  */
 	subq	$sp, 64, $sp
 	.cfi_adjust_cfa_offset	64
@@ -212,8 +247,6 @@ CFI_START_OSF_FRAME entMM
 	.cfi_rel_offset	$15, 48
 	addq	$sp, 64, $19
 /* handle the fault */
-	lda	$8, 0x3fff
-	bic	$sp, $8, $8
 	jsr	$26, do_page_fault
 /* reload the registers after the exception code played.  */
 	ldq	$9, 0($sp)
@@ -239,8 +272,9 @@ CFI_END_OSF_FRAME entMM
 CFI_START_OSF_FRAME entIF
 	SAVE_ALL
 	lda	$8, 0x3fff
-	lda	$26, ret_from_sys_call
 	bic	$sp, $8, $8
+	TRACE_IRQS_OFF
+	lda	$26, ret_from_sys_call
 	mov	$sp, $17
 	jsr	$31, do_entIF
 CFI_END_OSF_FRAME entIF
@@ -378,6 +412,9 @@ entUnaUser:
 	.cfi_restore	$0
 	.cfi_adjust_cfa_offset	-256
 	SAVE_ALL		/* setup normal kernel stack */
+	lda	$8, 0x3fff
+	bic	$sp, $8, $8
+	TRACE_IRQS_OFF
 	lda	$sp, -64($sp)
 	.cfi_adjust_cfa_offset	64
 	stq	$9, 0($sp)
@@ -394,9 +431,7 @@ entUnaUser:
 	.cfi_rel_offset	$13, 32
 	.cfi_rel_offset	$14, 40
 	.cfi_rel_offset	$15, 48
-	lda	$8, 0x3fff
 	addq	$sp, 64, $19
-	bic	$sp, $8, $8
 	jsr	$26, do_entUnaUser
 	ldq	$9, 0($sp)
 	ldq	$10, 8($sp)
@@ -420,8 +455,9 @@ CFI_END_OSF_FRAME entUna
 CFI_START_OSF_FRAME entDbg
 	SAVE_ALL
 	lda	$8, 0x3fff
-	lda	$26, ret_from_sys_call
 	bic	$sp, $8, $8
+	TRACE_IRQS_OFF
+	lda	$26, ret_from_sys_call
 	mov	$sp, $16
 	jsr	$31, do_entDbg
 CFI_END_OSF_FRAME entDbg
@@ -449,6 +485,7 @@ entSys:
 	SAVE_ALL
 	lda	$8, 0x3fff
 	bic	$sp, $8, $8
+	TRACE_IRQS_OFF
 	lda	$4, NR_syscalls($31)
 	stq	$16, SP_OFF+24($sp)
 	lda	$5, sys_call_table
@@ -493,6 +530,7 @@ ret_to_user:
 	and	$17, _TIF_WORK_MASK, $2
 	bne	$2, work_pending
 restore_all:
+	TRACE_IRQS_ON
 	ldl	$2, TI_STATUS($8)
 	and	$2, TS_SAVED_FP | TS_RESTORE_FP, $3
 	bne	$3, restore_fpu
