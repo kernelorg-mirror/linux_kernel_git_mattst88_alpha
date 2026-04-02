@@ -57,7 +57,7 @@ static inline void arch_local_irq_restore(unsigned long flags)
 
 static inline bool arch_irqs_disabled_flags(unsigned long flags)
 {
-	return (flags & 7) == IPL_MAX;
+	return (flags & 7) > IPL_MIN;
 }
 
 static inline bool arch_irqs_disabled(void)
